@@ -1642,11 +1642,13 @@ def import_destination_digest(path: Path, text: str) -> Path:
 
 
 def import_ignored_summary(root: Path) -> dict[str, dict[str, int]]:
-    groups = {"queue": root / "queue", "shortcut_runs": root / "shortcut-runs", "temporary": root / ".tmp"}
+    groups = {"queue": root / "queue", "shortcut_runs": root / "shortcut-runs"}
     summary: dict[str, dict[str, int]] = {}
     for name, path in groups.items():
         files = [item for item in path.rglob("*") if item.is_file()] if path.exists() else []
         summary[name] = {"files": len(files), "bytes": sum(item.stat().st_size for item in files)}
+    temporary = [item for item in root.rglob("*.tmp") if item.is_file()]
+    summary["temporary"] = {"files": len(temporary), "bytes": sum(item.stat().st_size for item in temporary)}
     return summary
 
 
