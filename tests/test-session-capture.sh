@@ -239,8 +239,9 @@ printf '%s\n' '{"schema_version":1,"ts":"2025-01-01T00:00:00Z","event":"session_
 printf '%s\n' '{"promoted":{"fb-imported":{"ts":"2025-01-02T00:00:00Z","topic":"demo"}}}' > "$import_root/feedback/status.json"
 printf '%s\n' '{"schema_version":1,"event":"session_event"}' > "$import_root/queue/2025-01-01.jsonl"
 printf 'obsolete\n' > "$import_root/shortcut-runs/old.log"
+printf 'partial\n' > "$import_root/state/codex/.interrupted.json.123.tmp"
 import_dry_run="$("$SESSION" --hub "$hub" import "$import_root" --dry-run --json 2>&1)"
-if python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["states_imported"] == 1 and data["states_kept"] == 1 and data["ignored"]["queue"]["files"] == 1' <<<"$import_dry_run" \
+if python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["states_imported"] == 1 and data["states_kept"] == 1 and data["ignored"]["queue"]["files"] == 1 and data["ignored"]["temporary"]["files"] == 1' <<<"$import_dry_run" \
   && [ ! -f "$hub/.sessions/state/codex/imported.json" ]; then
   log_pass "session import dry-run preserves current store"
 else
