@@ -1575,6 +1575,209 @@ def run_feedback_promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def import_json_object(path: Path, label: str, allow_missing: bool = False) -> dict[str, Any]:
+    if allow_missing and not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid {label}: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{label} must be a JSON object: {path}")
+    return data
+
+
+def require_import_schema(data: dict[str, Any], label: str, path: Path) -> None:
+    if data.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(f"{label} must declare schema_version {SCHEMA_VERSION}: {path}")
+
+
+def import_jsonl(path: Path, label: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(f"cannot read {label}: {path}") from exc
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid {label} JSON at {path}:{number}") from exc
+        if not isinstance(row, dict):
+            raise ValueError(f"{label} row must be an object at {path}:{number}")
+        require_import_schema(row, label, path)
+        rows.append(row)
+    return rows
+
+
+def session_time(value: Any) -> dt.datetime:
+    return parse_timestamp(str(value or "1970-01-01T00:00:00Z"))
+
+
+def import_digest_path(source_root: Path, target_root: Path, value: Any, paths: dict[str, str]) -> str | None:
+    if not value:
+        return None
+    text = str(value)
+    if text in paths:
+        return paths[text]
+    candidate = Path(text)
+    try:
+        relative = candidate.relative_to(source_root)
+    except ValueError:
+        return text
+    if relative.parts and relative.parts[0] == "digests":
+        return paths.get(str(source_root / relative), str(target_root / relative))
+    return text
+
+
+def import_destination_digest(path: Path, text: str) -> Path:
+    if not path.exists() or path.read_text(encoding="utf-8") == text:
+        return path
+    suffix = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    return path.with_name(f"{path.stem}-imported-{suffix}{path.suffix}")
+
+
+def import_ignored_summary(root: Path) -> dict[str, dict[str, int]]:
+    groups = {"queue": root / "queue", "shortcut_runs": root / "shortcut-runs", "temporary": root / ".tmp"}
+    summary: dict[str, dict[str, int]] = {}
+    for name, path in groups.items():
+        files = [item for item in path.rglob("*") if item.is_file()] if path.exists() else []
+        summary[name] = {"files": len(files), "bytes": sum(item.stat().st_size for item in files)}
+    return summary
+
+
+def run_import(args: argparse.Namespace) -> int:
+    target_root = sessions_dir(resolve_hub(args))
+    source_root = expand_leading_tilde(args.source).resolve()
+    if not source_root.is_dir():
+        raise ValueError(f"session import source is not a directory: {source_root}")
+    if source_root == target_root.resolve():
+        raise ValueError("session import source and destination must differ")
+    if source_root.is_symlink():
+        raise ValueError(f"refusing symlinked session import source: {source_root}")
+
+    source_states: list[tuple[Path, dict[str, Any]]] = []
+    state_root = source_root / "state"
+    if state_root.exists():
+        for path in sorted(state_root.glob("*/*.json")):
+            if path.is_symlink():
+                raise ValueError(f"refusing symlinked session state: {path}")
+            state = import_json_object(path, "session state")
+            require_import_schema(state, "session state", path)
+            if not state.get("harness") or not state.get("native_session_id"):
+                raise ValueError(f"session state needs harness and native_session_id: {path}")
+            source_states.append((path, state))
+
+    source_feedback = import_jsonl(source_root / "feedback" / "candidates.jsonl", "feedback candidate")
+    source_registry = import_jsonl(source_root / "registry.jsonl", "registry entry")
+    source_status = import_json_object(source_root / "feedback" / "status.json", "feedback status", allow_missing=True)
+    source_promoted = source_status.get("promoted", {})
+    if source_promoted and not isinstance(source_promoted, dict):
+        raise ValueError("feedback status promoted must be an object")
+
+    digest_paths: dict[str, str] = {}
+    digests: list[tuple[Path, Path, str]] = []
+    digest_root = source_root / "digests"
+    if digest_root.exists():
+        for path in sorted(digest_root.rglob("*.md")):
+            if path.is_symlink():
+                raise ValueError(f"refusing symlinked session digest: {path}")
+            text = path.read_text(encoding="utf-8")
+            relative = path.relative_to(source_root)
+            destination = import_destination_digest(target_root / relative, text)
+            digests.append((path, destination, text))
+            digest_paths[str(path)] = str(destination)
+
+    report: dict[str, Any] = {
+        "source": str(source_root),
+        "destination": str(target_root),
+        "dry_run": bool(args.dry_run),
+        "states_imported": 0,
+        "states_kept": 0,
+        "digests_imported": 0,
+        "digests_existing": 0,
+        "feedback_imported": 0,
+        "feedback_existing": 0,
+        "registry_imported": 0,
+        "registry_existing": 0,
+        "ignored": import_ignored_summary(source_root),
+    }
+    current_feedback_ids = candidate_ids(target_root)
+    current_registry = import_jsonl(target_root / "registry.jsonl", "destination registry entry")
+    registry_hashes = {
+        hashlib.sha256(json.dumps(row, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        for row in current_registry
+    }
+
+    for _, destination, text in digests:
+        if destination.exists() and destination.read_text(encoding="utf-8") == text:
+            report["digests_existing"] += 1
+        else:
+            report["digests_imported"] += 1
+            if not args.dry_run:
+                atomic_write(destination, text)
+
+    for _, incoming in source_states:
+        destination = state_path(target_root, str(incoming["harness"]), str(incoming["native_session_id"]))
+        existing = read_json(destination, {}) if destination.exists() else {}
+        if isinstance(existing, dict) and existing and session_time(existing.get("last_seen_at")) >= session_time(incoming.get("last_seen_at")):
+            report["states_kept"] += 1
+            continue
+        imported = json.loads(json.dumps(incoming))
+        remapped = import_digest_path(source_root, target_root, imported.get("last_digest_path"), digest_paths)
+        if remapped:
+            imported["last_digest_path"] = remapped
+        report["states_imported"] += 1
+        if not args.dry_run:
+            write_json(destination, imported)
+
+    for candidate in source_feedback:
+        candidate_id = str(candidate.get("id") or "")
+        if not candidate_id:
+            raise ValueError("feedback candidate needs an id")
+        if candidate_id in current_feedback_ids:
+            report["feedback_existing"] += 1
+            continue
+        report["feedback_imported"] += 1
+        current_feedback_ids.add(candidate_id)
+        if not args.dry_run:
+            append_jsonl(feedback_candidates_path(target_root), candidate)
+
+    for row in source_registry:
+        row_hash = hashlib.sha256(json.dumps(row, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        if row_hash in registry_hashes:
+            report["registry_existing"] += 1
+            continue
+        report["registry_imported"] += 1
+        registry_hashes.add(row_hash)
+        if not args.dry_run:
+            append_jsonl(target_root / "registry.jsonl", row)
+
+    if not args.dry_run:
+        target_status = import_json_object(feedback_status_path(target_root), "destination feedback status", allow_missing=True)
+        target_promoted = target_status.get("promoted", {})
+        if not isinstance(target_promoted, dict):
+            target_promoted = {}
+        target_promoted.update({key: value for key, value in source_promoted.items() if key not in target_promoted})
+        target_status["promoted"] = target_promoted
+        write_json(feedback_status_path(target_root), target_status)
+        rebuild_indexes(target_root)
+
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"session import {'dry-run' if args.dry_run else 'complete'}: {source_root} -> {target_root}")
+        for key in ("states_imported", "states_kept", "digests_imported", "digests_existing", "feedback_imported", "feedback_existing", "registry_imported", "registry_existing"):
+            print(f"{key}: {report[key]}")
+        print(f"ignored queue: {report['ignored']['queue']['files']} files / {report['ignored']['queue']['bytes']} bytes")
+        print(f"ignored shortcut-runs: {report['ignored']['shortcut_runs']['files']} files / {report['ignored']['shortcut_runs']['bytes']} bytes")
+    return 0
+
+
 def run_status(args: argparse.Namespace) -> int:
     hub = resolve_hub(args)
     root = sessions_dir(hub)
@@ -1634,6 +1837,12 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--topic", help="Topic tag to attach to this digest.")
     capture.add_argument("--summary", help="Short manual summary for the digest.")
     capture.set_defaults(func=run_capture)
+
+    import_cmd = sub.add_parser("import", help="Import compatible redacted session history without replacing current state.")
+    import_cmd.add_argument("source", help="Source .sessions directory to import.")
+    import_cmd.add_argument("--dry-run", action="store_true", help="Validate and report import actions without writing.")
+    import_cmd.add_argument("--json", action="store_true", help="Print the import report as JSON.")
+    import_cmd.set_defaults(func=run_import)
 
     list_cmd = sub.add_parser("list", help="List captured sessions.")
     list_cmd.add_argument("--harness", help="Filter by harness.")

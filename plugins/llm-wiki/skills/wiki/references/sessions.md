@@ -213,6 +213,7 @@ llm-wiki-session rehydrate --topic meta-llm-wiki
 Strict forced continuation is not the default. If implemented later, it must be
 opt-in and guard against loops with per-turn counters and stop-hook-active flags.
 
+
 ## Feedback Candidates
 
 User-prompt hooks may create feedback candidates under `.sessions/feedback/`
