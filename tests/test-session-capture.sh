@@ -222,6 +222,42 @@ else
   log_fail "list --json reports captured session" "$list_output"
 fi
 
+import_root="$tmpdir/import-source/.sessions"
+mkdir -p "$import_root/state/codex" "$import_root/digests/2025/01" "$import_root/feedback" "$import_root/queue" "$import_root/shortcut-runs"
+cat > "$import_root/state/codex/imported.json" <<JSON
+{"schema_version":1,"harness":"codex","native_session_id":"imported","llm_wiki_session_id":"codex:imported","started_at":"2025-01-01T00:00:00Z","last_seen_at":"2025-01-01T00:00:00Z","cwd":"$PWD","last_digest_path":"$import_root/digests/2025/01/codex-imported.md"}
+JSON
+cat > "$hub/.sessions/state/codex/shared.json" <<JSON
+{"schema_version":1,"harness":"codex","native_session_id":"shared","llm_wiki_session_id":"codex:shared","started_at":"2026-01-01T00:00:00Z","last_seen_at":"2026-01-02T00:00:00Z","cwd":"$PWD","marker":"destination"}
+JSON
+cat > "$import_root/state/codex/shared.json" <<JSON
+{"schema_version":1,"harness":"codex","native_session_id":"shared","llm_wiki_session_id":"codex:shared","started_at":"2025-01-01T00:00:00Z","last_seen_at":"2025-01-01T00:00:00Z","cwd":"$PWD","marker":"source"}
+JSON
+printf '%s\n' '---' 'title: "Imported digest"' 'type: session-digest' 'schema_version: 1' '---' '' '# Imported digest' > "$import_root/digests/2025/01/codex-imported.md"
+printf '%s\n' '{"schema_version":1,"id":"fb-imported","ts":"2025-01-01T00:00:00Z","event":"feedback_candidate","llm_wiki_session_id":"codex:imported","feedback_type":"preference","confidence":"medium"}' > "$import_root/feedback/candidates.jsonl"
+printf '%s\n' '{"schema_version":1,"ts":"2025-01-01T00:00:00Z","event":"session_seen","llm_wiki_session_id":"codex:imported"}' > "$import_root/registry.jsonl"
+printf '%s\n' '{"promoted":{"fb-imported":{"ts":"2025-01-02T00:00:00Z","topic":"demo"}}}' > "$import_root/feedback/status.json"
+printf '%s\n' '{"schema_version":1,"event":"session_event"}' > "$import_root/queue/2025-01-01.jsonl"
+printf 'obsolete\n' > "$import_root/shortcut-runs/old.log"
+import_dry_run="$("$SESSION" --hub "$hub" import "$import_root" --dry-run --json 2>&1)"
+if python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["states_imported"] == 1 and data["states_kept"] == 1 and data["ignored"]["queue"]["files"] == 1' <<<"$import_dry_run" \
+  && [ ! -f "$hub/.sessions/state/codex/imported.json" ]; then
+  log_pass "session import dry-run preserves current store"
+else
+  log_fail "session import dry-run preserves current store" "$import_dry_run"
+fi
+import_result="$("$SESSION" --hub "$hub" import "$import_root" --json 2>&1)"
+if python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["states_imported"] == 1 and data["states_kept"] == 1 and data["feedback_imported"] == 1 and data["registry_imported"] == 1' <<<"$import_result" \
+  && [ -f "$hub/.sessions/digests/2025/01/codex-imported.md" ] \
+  && grep -q 'marker.*destination' "$hub/.sessions/state/codex/shared.json" \
+  && grep -q 'codex-imported.md' "$hub/.sessions/state/codex/imported.json" \
+  && grep -q 'fb-imported' "$hub/.sessions/indexes/feedback.json" \
+  && [ ! -e "$hub/.sessions/queue/2025-01-01.jsonl" ]; then
+  log_pass "session import merges v1 history, preserves newer state, and rebuilds indexes"
+else
+  log_fail "session import merges v1 history, preserves newer state, and rebuilds indexes" "$import_result"
+fi
+
 echo ""
 echo "==========================================="
 printf "Results: \033[32m%d passed\033[0m, \033[31m%d failed\033[0m, %d total\n" "$PASS" "$FAIL" "$TOTAL"
