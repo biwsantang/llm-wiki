@@ -1772,8 +1772,17 @@ def run_import(args: argparse.Namespace) -> int:
 
         existing = read_json(destination, {}) if destination.exists() else {}
         if isinstance(existing, dict) and existing and session_time(existing.get("last_seen_at")) >= session_time(incoming.get("last_seen_at")):
-            report["states_kept"] += 1
-            continue
+            if import_state_fingerprint(existing) == import_state_fingerprint(imported):
+                report["states_kept"] += 1
+                continue
+            # Keep the newer current state at its canonical path, but retain
+            # the older imported record as a collision-safe history snapshot.
+            text = json.dumps(imported, indent=2, sort_keys=True) + "\n"
+            destination = import_destination_file(destination, text)
+            existing = read_json(destination, {}) if destination.exists() else {}
+            if isinstance(existing, dict) and existing and import_state_fingerprint(existing) == import_state_fingerprint(imported):
+                report["states_kept"] += 1
+                continue
         report["states_imported"] += 1
         if not args.dry_run:
             write_json(destination, imported)
