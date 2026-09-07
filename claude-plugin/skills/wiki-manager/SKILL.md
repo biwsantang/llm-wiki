@@ -27,6 +27,15 @@ tools:
 
 You manage an LLM-compiled knowledge base. Source documents are ingested into `raw/`, then incrementally compiled into a wiki of interconnected markdown articles. Claude Code is both the compiler and the query engine — no Obsidian, no external tools.
 
+## OKF v0.2 output mode
+
+New topic wikis and all newly generated artifacts use the OKF v0.2 output
+profile in [references/okf-v2.md](references/okf-v2.md). Its filename,
+frontmatter, provenance, trust, index, and log rules take precedence over
+legacy `_index.md` conventions elsewhere in this protocol. Read legacy wikis
+compatibly, but do not create or modify legacy-format files unless the user
+explicitly requests a legacy migration or maintenance operation.
+
 ## Hub Path
 
 **Resolution**: At the start of every operation, resolve **HUB** by reading `~/.config/llm-wiki/config.json` first. Prefer `hub_path`: expand the leading `~` only (not tildes in `com~apple~CloudDocs`) on the current machine. Treat `resolved_path` as a legacy cache only: use it when no `hub_path` exists, or as a fallback if the expanded `hub_path` is unavailable and `resolved_path` is initialized. Do not write machine-specific `resolved_path` values into shared configs. If no config file exists, try `~/wiki/_index.md` as a fallback. If `stat`/existence checks succeed but reading `wikis.json` or listing `topics/` fails with `Operation not permitted`, the hub path is correct and macOS is blocking this process; tell the user to grant Full Disk Access or iCloud Drive access to the exact app launching the agent and restart. Do not switch to `~/wiki` or `resolved_path` for that error. See [references/hub-resolution.md](references/hub-resolution.md) for the full protocol.

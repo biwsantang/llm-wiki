@@ -9,6 +9,7 @@ TARGET_SKILL="$TARGET_PLUGIN/skills/wiki-manager"
 TARGET_QUERY="$TARGET_PLUGIN/skills/wiki-query"
 CLAUDE_MANIFEST="$ROOT/claude-plugin/.claude-plugin/plugin.json"
 LOCAL_HELPER="$ROOT/scripts/llm-wiki"
+OKF_HELPER="$ROOT/scripts/llm-wiki-okf.py"
 
 if [ ! -d "$SOURCE_SKILL" ]; then
   echo "Missing source skill: $SOURCE_SKILL" >&2
@@ -29,16 +30,21 @@ if [ ! -f "$LOCAL_HELPER" ]; then
   echo "Missing local helper: $LOCAL_HELPER" >&2
   exit 1
 fi
-
 if ! command -v rsync >/dev/null 2>&1; then
   echo "Missing required tool: rsync" >&2
+  exit 1
+fi
+if [ ! -f "$OKF_HELPER" ]; then
+  echo "Missing OKF helper: $OKF_HELPER" >&2
   exit 1
 fi
 
 mkdir -p "$ROOT/claude-plugin/bin" "$TARGET_PLUGIN/bin"
 cp "$LOCAL_HELPER" "$ROOT/claude-plugin/bin/llm-wiki"
 cp "$LOCAL_HELPER" "$TARGET_PLUGIN/bin/llm-wiki"
-chmod 0755 "$ROOT/claude-plugin/bin/llm-wiki" "$TARGET_PLUGIN/bin/llm-wiki"
+cp "$OKF_HELPER" "$ROOT/claude-plugin/bin/llm-wiki-okf.py"
+cp "$OKF_HELPER" "$TARGET_PLUGIN/bin/llm-wiki-okf.py"
+chmod 0755 "$ROOT/claude-plugin/bin/llm-wiki" "$TARGET_PLUGIN/bin/llm-wiki" "$ROOT/claude-plugin/bin/llm-wiki-okf.py" "$TARGET_PLUGIN/bin/llm-wiki-okf.py"
 
 mkdir -p "$TARGET_PLUGIN/skills"
 # references/ is a symlink into the Claude source — exclude from rsync so it's
