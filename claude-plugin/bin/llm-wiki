@@ -8,6 +8,7 @@ humans a local command for the checks that can be done without an LLM.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import base64
 import datetime as dt
 import getpass
@@ -5950,6 +5951,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "okf":
+        tool = Path(__file__).with_name("llm-wiki-okf.py")
+        if not tool.is_file():
+            print("OKF helper missing beside llm-wiki; reinstall or re-sync the plugin.", file=sys.stderr)
+            return 2
+        return subprocess.call([sys.executable, str(tool), *argv[1:]])
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

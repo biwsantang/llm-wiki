@@ -10,6 +10,27 @@ An LLM-compiled knowledge base. You (the LLM agent) are both the compiler and th
 
 **The metaphor**: raw sources are source code, you are the compiler, the wiki is the executable.
 
+## OKF v0.2 Output Contract
+
+For all **new** topic wikis and generated artifacts, use the [Open Knowledge
+Format v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md).
+This requirement takes precedence over legacy `_index.md` examples later in
+this file while the repository migration is in progress.
+
+- Use `index.md`, never `_index.md`. Only `index.md` and `log.md` are reserved
+  files; every other Markdown file needs YAML frontmatter with a non-empty
+  `type`.
+- The bundle root's `index.md` may declare `okf_version: "0.2"`; other indexes
+  have no frontmatter. Logs use newest-first `## YYYY-MM-DD` headings.
+- Use `sources: [{ resource: ... }]`, `generated: { by, at }`, structured
+  `verified`, and standard Markdown links. Timestamps carry an explicit UTC
+  offset.
+- Preserve LLM Wiki-specific metadata beneath `llm_wiki:`. The directory
+  hierarchy remains valid, since OKF intentionally does not prescribe one.
+- Read existing legacy wikis compatibly. Migrate them bundle-to-bundle with
+  `scripts/llm-wiki-okf.py migrate <source> <target>`; do not rewrite them in
+  place by default.
+
 ## Architecture
 
 ### Hub Path

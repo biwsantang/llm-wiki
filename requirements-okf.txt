@@ -1,0 +1,2 @@
+# Strict YAML parsing for the OKF v0.2 validator and migrator.
+PyYAML>=6.0

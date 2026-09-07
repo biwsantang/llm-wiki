@@ -59,6 +59,29 @@ passes a wiki destination or auto-promotes adapter output.
 
 ## Install
 
+## OKF v0.2 migration (preview)
+
+LLM Wiki is adopting the [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+as its on-disk interchange format. The migration tool is deliberately
+bundle-to-bundle: it never changes an existing wiki unless a future explicit
+in-place workflow is selected.
+
+```bash
+python3 -m pip install -r requirements-okf.txt
+
+# Inspect the conversion without writing anything.
+./scripts/llm-wiki-okf.py migrate ~/wiki/topics/example /tmp/example-okf --dry-run
+
+# Write and validate a separate, OKF v0.2 bundle.
+./scripts/llm-wiki-okf.py migrate ~/wiki/topics/example /tmp/example-okf
+./scripts/llm-wiki-okf.py validate /tmp/example-okf
+```
+
+The converter renames `_index.md` to the standard `index.md`, supplies the
+required `type` on every concept, normalizes provenance/trust metadata, and
+keeps LLM Wiki-specific fields under an `llm_wiki` extension object. This is a
+preview migration surface while new-wiki writers are converted.
+
 **Claude Code** (native plugin):
 ```bash
 claude plugin install wiki@llm-wiki

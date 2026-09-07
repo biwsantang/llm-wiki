@@ -6,11 +6,15 @@ allowed-tools: Read, Write, Edit, Glob, Bash(ls:*), Bash(wc:*), Bash(mkdir:*), B
 
 ## Your task
 
+**OKF v0.2 is the default for new topic wikis.** Follow
+`skills/wiki-manager/references/okf-v2.md`; its `index.md`, typed-concept,
+provenance, and log requirements override legacy `_index.md` wording below.
+
 **Resolve the wiki.** Do NOT search the filesystem or read reference files — follow these steps:
 1. Read `$HOME/.config/llm-wiki/config.json`. If it has `hub_path`, expand leading `~` only (not tildes in `com~apple~CloudDocs`) and prefer that path; use `resolved_path` only as a fallback cache when the expanded `hub_path` is unavailable and `resolved_path` is initialized. If config has only `resolved_path`, use it. If the configured path can be statted but reading `wikis.json` or listing `topics/` fails with `Operation not permitted`, stop and ask the user to grant Full Disk Access/iCloud Drive access to the launcher; do not fall back to `~/wiki` or `resolved_path`. Do not write machine-specific `resolved_path` into shared configs.
-2. If no config → read `$HOME/wiki/_index.md`. If it exists → HUB = `$HOME/wiki`. If nothing found, ask the user where to create the wiki.
+2. If no config → read `$HOME/wiki/index.md`. If it exists → HUB = `$HOME/wiki`. If nothing found, ask the user where to create the wiki.
 3. **Wiki location** (first match): `--local` → `.wiki/` in CWD; `--wiki <name>` → `HUB/wikis.json` lookup with portable path resolution (`<HUB>`, `~`, absolute, or HUB-relative); if the registry path is stale, fall back to `HUB/topics/<name>`; CWD has `.wiki/` → use it; else → HUB.
-4. Read `<wiki>/_index.md` if found. Variant: **wiki-neutral** — `wiki.md` is the router, init, and config command, so "wiki missing" is not always an error; the init subcommand creates the wiki, status shows an empty hub gracefully, and the natural-language router explains how to create one.
+4. Read `<wiki>/index.md` if found. Variant: **wiki-neutral** — `wiki.md` is the router, init, and config command, so "wiki missing" is not always an error; the init subcommand creates the wiki, status shows an empty hub gracefully, and the natural-language router explains how to create one.
 
 You are the llm-wiki knowledge base manager. Read the skill at `skills/wiki-manager/SKILL.md` and structure reference at `skills/wiki-manager/references/wiki-structure.md` for full conventions.
 
@@ -23,13 +27,13 @@ Initialize a new wiki. Parse arguments:
 - `init <name> --local` → create local wiki at `.wiki/` in current project
 - `init` (no name) → ask: "What topic is this for?" Then create the topic wiki with their answer.
 
-**A topic name is always required.** There is no bare global wiki — HUB is only a hub (wikis.json + _index.md + log.md). All content lives in topic sub-wikis.
+**A topic name is always required.** There is no bare global wiki — HUB is only a hub (wikis.json + index.md + log.md). All content lives in topic sub-wikis.
 
 **Steps:**
 
 1. If HUB doesn't exist yet, create the hub first:
    - `HUB/wikis.json` (empty registry)
-   - `HUB/_index.md` (hub index with empty topic wiki table)
+   - `HUB/index.md` (hub index with empty topic wiki table)
    - `HUB/log.md` (global activity log)
    - `HUB/topics/` directory
    - NO `raw/`, `wiki/`, `inventory/`, `datasets/`, `output/`, `inbox/`, `config.md`, or `.obsidian/` at the hub level.
@@ -77,7 +81,7 @@ Initialize a new wiki. Parse arguments:
      }
      ```
 
-4. Create empty `_index.md` only in the directories created during init,
+4. Create empty `index.md` only in the directories created during init,
    following the format in `references/wiki-structure.md`. Use today's date.
    Set all counts to 0. Do not write empty indexes for optional layers that do
    not exist yet.
@@ -86,7 +90,8 @@ Initialize a new wiki. Parse arguments:
    ```
    # Wiki Activity Log
 
-   ## [YYYY-MM-DD] init | Wiki initialized
+   ## YYYY-MM-DD
+   * **Initialization**: Created topic wiki.
    ```
 
 6. Ask the user: "What is this wiki about?" Use their answer to create
@@ -100,7 +105,7 @@ Initialize a new wiki. Parse arguments:
    `/wiki:archive restore <slug>` or choose a different slug. Do not silently
    create a new active topic over an archived topic boundary.
 
-8. Register in `HUB/wikis.json` with a portable relative path (`topics/<slug>`) and update hub `_index.md` topic wiki table. For local wikis, add to the `local_wikis` array with its absolute local path.
+8. Register in `HUB/wikis.json` with a portable relative path (`topics/<slug>`) and update hub `index.md` topic wiki table. For local wikis, add to the `local_wikis` array with its absolute local path.
 
 9. Report what was created and suggest:
    - `/wiki:research "topic" --sources 10` — auto-research to bootstrap
