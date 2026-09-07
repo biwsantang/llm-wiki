@@ -315,6 +315,12 @@ def convert_log(text: str) -> str:
             groups.setdefault(date, []).append(f"* **{operation.strip().title()}**: {description.strip()}")
             current_date = date
             continue
+        dated_bullet = re.fullmatch(r"-\s*(\d{4}-\d{2}-\d{2})\s*:\s*(.+)", line)
+        if dated_bullet:
+            date, description = dated_bullet.groups()
+            groups.setdefault(date, []).append(f"* {description.strip()}")
+            current_date = date
+            continue
         heading = re.fullmatch(r"##\s+(\d{4}-\d{2}-\d{2})", line)
         if heading:
             current_date = heading.group(1)
