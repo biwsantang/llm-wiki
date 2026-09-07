@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import re
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +29,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the CLI user
 
 OKF_VERSION = "0.2"
 RESERVED = {"index.md", "log.md"}
-RUNTIME_PARTS = {".sessions", ".librarian", ".audit", ".obsidian", "inbox"}
+RUNTIME_PARTS = {".git", ".sessions", ".librarian", ".audit", ".obsidian", "inbox"}
+RUNTIME_ROOT_FILES = {
+    ".research-session.json",
+    ".thesis-session.json",
+    ".session-events.jsonl",
+    ".session-checkpoint.json",
+}
 LEGACY_EXTENSION_KEYS = {
     "category",
     "kind",
@@ -58,7 +66,7 @@ class Issue:
 
 
 def parse_markdown(path: Path) -> tuple[dict[str, Any] | None, str]:
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8").lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     if not text.startswith("---\n"):
         return None, text
     closing = re.search(r"(?m)^---\s*$", text[4:])
@@ -78,7 +86,10 @@ def serialize(frontmatter: dict[str, Any], body: str) -> str:
 
 
 def is_runtime_path(root: Path, path: Path) -> bool:
-    return any(part in RUNTIME_PARTS for part in path.relative_to(root).parts)
+    relative = path.relative_to(root)
+    return any(part in RUNTIME_PARTS for part in relative.parts) or (
+        len(relative.parts) == 1 and relative.name in RUNTIME_ROOT_FILES
+    )
 
 
 def markdown_files(root: Path) -> list[Path]:
@@ -125,6 +136,8 @@ def validate_log(path: Path, text: str, issues: list[Issue]) -> None:
 
 def validate(root: Path) -> list[Issue]:
     issues: list[Issue] = []
+    if not root.is_dir():
+        return [Issue(root, "bundle directory does not exist")]
     root_index = root / "index.md"
     if root_index.exists():
         try:
@@ -139,7 +152,10 @@ def validate(root: Path) -> list[Issue]:
 
     for path in markdown_files(root):
         if path.name == "log.md":
-            validate_log(path, path.read_text(encoding="utf-8"), issues)
+            try:
+                validate_log(path, path.read_text(encoding="utf-8"), issues)
+            except (OSError, UnicodeError) as error:
+                issues.append(Issue(path, str(error)))
             continue
         try:
             frontmatter, _ = parse_markdown(path)
@@ -202,12 +218,28 @@ def legacy_type(relative: Path, frontmatter: dict[str, Any]) -> str:
 
 def remap_path(value: str) -> str:
     value = value.replace("\\", "/").replace("_index.md", "index.md")
-    if value.startswith(("http://", "https://", "/")):
+    if value.startswith(("/", "./", "../")) or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
         return value
     return f"/{value}"
 
 
-def migrate_frontmatter(relative: Path, frontmatter: dict[str, Any]) -> dict[str, Any]:
+def remap_markdown_links(body: str) -> str:
+    return re.sub(r"(\]\(\s*<?[^)\s]*)_index\.md", r"\1index.md", body)
+
+
+def citation_sources(body: str) -> list[dict[str, str]]:
+    section = re.search(r"(?ms)^# Citations\s*$\n(.*?)(?=^# |\Z)", body)
+    if not section:
+        return []
+    resources: list[dict[str, str]] = []
+    for line in section.group(1).splitlines():
+        match = re.fullmatch(r"\s*-\s*(https?://\S+)\s*", line)
+        if match:
+            resources.append({"resource": match.group(1)})
+    return resources
+
+
+def migrate_frontmatter(relative: Path, frontmatter: dict[str, Any], body: str) -> dict[str, Any]:
     original = dict(frontmatter)
     result: dict[str, Any] = {}
     result["type"] = legacy_type(relative, original)
@@ -217,6 +249,7 @@ def migrate_frontmatter(relative: Path, frontmatter: dict[str, Any]) -> dict[str
     if "source" in original and "resource" not in result:
         result["resource"] = original["source"]
     sources = original.get("sources")
+    legacy_sources: list[Any] = []
     if isinstance(sources, list):
         converted: list[dict[str, Any]] = []
         for source in sources:
@@ -224,13 +257,24 @@ def migrate_frontmatter(relative: Path, frontmatter: dict[str, Any]) -> dict[str
                 converted.append({"resource": remap_path(source)})
             elif isinstance(source, dict) and source.get("resource"):
                 converted.append({**source, "resource": remap_path(str(source["resource"]))})
+            else:
+                legacy_sources.append(source)
         if converted:
             result["sources"] = converted
+    elif sources is not None:
+        legacy_sources.append(sources)
+    citations = citation_sources(body)
+    if citations:
+        existing = {str(item.get("resource")) for item in result.get("sources", [])}
+        for citation in citations:
+            if citation["resource"] not in existing:
+                result.setdefault("sources", []).append(citation)
+                existing.add(citation["resource"])
     generated = original.get("generated")
     if isinstance(generated, dict) and generated.get("by") and iso8601(generated.get("at")):
         result["generated"] = {"by": str(generated["by"]), "at": iso8601(generated["at"])}
     else:
-        legacy_time = next((original[key] for key in ("updated", "ingested", "created") if key in original and iso8601(original[key])), None)
+        legacy_time = next((original[key] for key in ("updated", "ingested", "created", "timestamp") if key in original and iso8601(original[key])), None)
         result["generated"] = {"by": "process:llm-wiki-migrator", "at": iso8601(legacy_time) or "1970-01-01T00:00:00Z"}
     verified = original.get("verified")
     if isinstance(verified, (str, dt.date, dt.datetime)) and iso8601(verified):
@@ -238,9 +282,22 @@ def migrate_frontmatter(relative: Path, frontmatter: dict[str, Any]) -> dict[str
     elif isinstance(verified, (dict, list)):
         result["verified"] = verified
     extension = {key: original[key] for key in LEGACY_EXTENSION_KEYS if key in original}
+    if "type" in original:
+        extension["legacy_type"] = original["type"]
+    if legacy_sources:
+        extension["legacy_sources"] = legacy_sources
+    handled = {
+        "type", "title", "description", "resource", "tags", "status", "stale_after", "source", "sources",
+        "generated", "verified", "created", "updated", "ingested", "timestamp", *LEGACY_EXTENSION_KEYS,
+    }
+    unknown = {key: value for key, value in original.items() if key not in handled}
+    if unknown:
+        extension["legacy_frontmatter"] = unknown
     legacy_dates = {key: str(original[key]) for key in ("created", "updated", "ingested") if key in original}
     if legacy_dates:
         extension["legacy_dates"] = legacy_dates
+    if "timestamp" in original:
+        extension["legacy_timestamp"] = str(original["timestamp"])
     if extension:
         result["llm_wiki"] = extension
     return result
@@ -248,36 +305,74 @@ def migrate_frontmatter(relative: Path, frontmatter: dict[str, Any]) -> dict[str
 
 def convert_log(text: str) -> str:
     groups: dict[str, list[str]] = {}
-    legacy = re.findall(r"(?m)^## \[(\d{4}-\d{2}-\d{2})\]\s*([^|\n]+?)\s*\|\s*(.+)$", text)
-    if legacy:
-        for date, operation, description in legacy:
+    current_date: str | None = None
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("# "):
+            continue
+        legacy = re.fullmatch(r"## \[(\d{4}-\d{2}-\d{2})\]\s*([^|\n]+?)\s*\|\s*(.+)", line)
+        if legacy:
+            date, operation, description = legacy.groups()
             groups.setdefault(date, []).append(f"* **{operation.strip().title()}**: {description.strip()}")
-    else:
-        current_date: str | None = None
-        for line in text.splitlines():
-            heading = re.fullmatch(r"##\s+(\d{4}-\d{2}-\d{2})", line)
-            if heading:
-                current_date = heading.group(1)
-                groups.setdefault(current_date, [])
-            elif current_date and line.strip():
-                groups[current_date].append(line)
+            current_date = date
+            continue
+        heading = re.fullmatch(r"##\s+(\d{4}-\d{2}-\d{2})", line)
+        if heading:
+            current_date = heading.group(1)
+            groups.setdefault(current_date, [])
+            continue
+        if current_date:
+            groups[current_date].append(line)
+            continue
+        raise ValueError("log.md contains content outside a dated entry; migrate it manually to avoid data loss")
     lines = ["# Directory Update Log", ""]
     for date in sorted(groups, reverse=True):
         lines.extend([f"## {date}", *groups[date], ""])
     return "\n".join(lines).rstrip() + "\n"
 
 
-def copy_and_migrate(source: Path, target: Path) -> list[str]:
-    if target.exists() and any(target.iterdir()):
-        raise ValueError(f"target already exists and is not empty: {target}")
-    target.mkdir(parents=True, exist_ok=True)
+def ensure_safe_target(source: Path, target: Path) -> None:
+    if target == source or source in target.parents:
+        raise ValueError("target must be outside the source bundle")
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise ValueError(f"target already exists and is not an empty directory: {target}")
+
+
+def migration_plan(source: Path) -> tuple[list[Path], list[str]]:
+    planned: list[Path] = []
     skipped: list[str] = []
     for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"refusing to migrate symlinked path: {path.relative_to(source)}")
         relative = path.relative_to(source)
         if is_runtime_path(source, path):
             if path.is_file():
                 skipped.append(relative.as_posix())
             continue
+        if path.is_file() and path.suffix.lower() == ".md":
+            frontmatter, _ = parse_markdown(path)
+            if path.name in {"_index.md", "index.md"} and frontmatter:
+                raise ValueError(f"index frontmatter requires manual migration: {relative}")
+            if path.name == "log.md":
+                convert_log(path.read_text(encoding="utf-8"))
+        planned.append(path)
+    destinations: dict[Path, Path] = {}
+    for path in planned:
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source)
+        destination_relative = Path(*("index.md" if part == "_index.md" else part for part in relative.parts))
+        previous = destinations.get(destination_relative)
+        if previous:
+            raise ValueError(
+                f"destination collision: {previous.relative_to(source)} and {relative} both map to {destination_relative}"
+            )
+        destinations[destination_relative] = path
+    return planned, skipped
+
+
+def write_migration(source: Path, target: Path, planned: list[Path]) -> None:
+    for path in planned:
+        relative = path.relative_to(source)
         destination_relative = Path(*("index.md" if part == "_index.md" else part for part in relative.parts))
         destination = target / destination_relative
         if path.is_dir():
@@ -288,7 +383,7 @@ def copy_and_migrate(source: Path, target: Path) -> list[str]:
             shutil.copy2(path, destination)
             continue
         frontmatter, body = parse_markdown(path)
-        body = body.replace("_index.md", "index.md")
+        body = remap_markdown_links(body)
         if destination.name == "index.md":
             if destination == target / "index.md":
                 destination.write_text(serialize({"okf_version": OKF_VERSION}, body), encoding="utf-8")
@@ -297,7 +392,26 @@ def copy_and_migrate(source: Path, target: Path) -> list[str]:
         elif destination.name == "log.md":
             destination.write_text(convert_log(path.read_text(encoding="utf-8")), encoding="utf-8")
         else:
-            destination.write_text(serialize(migrate_frontmatter(destination_relative, frontmatter or {}), body), encoding="utf-8")
+            destination.write_text(serialize(migrate_frontmatter(destination_relative, frontmatter or {}, body), body), encoding="utf-8")
+
+
+def copy_and_migrate(source: Path, target: Path) -> list[str]:
+    ensure_safe_target(source, target)
+    planned, skipped = migration_plan(source)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.okf-", dir=target.parent))
+    try:
+        write_migration(source, staging, planned)
+        issues = validate(staging)
+        if issues:
+            formatted = "; ".join(f"{issue.path.relative_to(staging)}: {issue.message}" for issue in issues)
+            raise ValueError(f"migration would produce an invalid bundle: {formatted}")
+        if target.exists():
+            target.rmdir()
+        os.replace(staging, target)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return skipped
 
 
@@ -318,19 +432,17 @@ def command_migrate(args: argparse.Namespace) -> int:
     target = Path(args.target).resolve()
     if not source.is_dir():
         raise SystemExit(f"source bundle does not exist: {source}")
+    ensure_safe_target(source, target)
+    planned, skipped = migration_plan(source)
     if args.dry_run:
         legacy_indexes = len(list(source.rglob("_index.md")))
-        markdown = len(markdown_files(source))
+        markdown = len([path for path in planned if path.is_file() and path.suffix.lower() == ".md"])
         print(f"Would migrate {markdown} Markdown files and rename {legacy_indexes} _index.md files.")
         print(f"Source: {source}\nTarget: {target}")
+        if skipped:
+            print(f"Would skip {len(skipped)} operational files outside the OKF bundle boundary.")
         return 0
     skipped = copy_and_migrate(source, target)
-    issues = validate(target)
-    if issues:
-        for issue in issues:
-            print(f"ERROR {issue.path.relative_to(target)}: {issue.message}")
-        print("Migration wrote an invalid bundle; inspect the target and do not use it as OKF.")
-        return 1
     print(f"Migrated to {target}")
     if skipped:
         print(f"Skipped {len(skipped)} operational files outside the OKF bundle boundary.")
@@ -350,7 +462,11 @@ def main() -> int:
     migrate_parser.add_argument("--dry-run", action="store_true")
     migrate_parser.set_defaults(handler=command_migrate)
     args = parser.parse_args()
-    return args.handler(args)
+    try:
+        return args.handler(args)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
