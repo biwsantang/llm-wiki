@@ -1634,11 +1634,23 @@ def import_digest_path(source_root: Path, target_root: Path, value: Any, paths: 
     return text
 
 
-def import_destination_digest(path: Path, text: str) -> Path:
+def import_destination_file(path: Path, text: str) -> Path:
     if not path.exists() or path.read_text(encoding="utf-8") == text:
         return path
     suffix = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
     return path.with_name(f"{path.stem}-imported-{suffix}{path.suffix}")
+
+
+def import_state_key(state: dict[str, Any]) -> tuple[str, str]:
+    return (safe_id(str(state["harness"])), safe_id(str(state["native_session_id"])))
+
+
+def import_state_fingerprint(state: dict[str, Any]) -> str:
+    """Identify state content while ignoring a remapped digest pointer."""
+    normalized = json.loads(json.dumps(state))
+    normalized.pop("last_digest_path", None)
+    text = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def import_ignored_summary(root: Path) -> dict[str, dict[str, int]]:
@@ -1673,6 +1685,12 @@ def run_import(args: argparse.Namespace) -> int:
             if not state.get("harness") or not state.get("native_session_id"):
                 raise ValueError(f"session state needs harness and native_session_id: {path}")
             source_states.append((path, state))
+    source_state_keys: dict[tuple[str, str], int] = {}
+    source_state_fingerprints: set[str] = set()
+    for _, state in source_states:
+        key = import_state_key(state)
+        source_state_keys[key] = source_state_keys.get(key, 0) + 1
+        source_state_fingerprints.add(import_state_fingerprint(state))
 
     source_feedback = import_jsonl(source_root / "feedback" / "candidates.jsonl", "feedback candidate")
     source_registry = import_jsonl(source_root / "registry.jsonl", "registry entry")
@@ -1690,7 +1708,7 @@ def run_import(args: argparse.Namespace) -> int:
                 raise ValueError(f"refusing symlinked session digest: {path}")
             text = path.read_text(encoding="utf-8")
             relative = path.relative_to(source_root)
-            destination = import_destination_digest(target_root / relative, text)
+            destination = import_destination_file(target_root / relative, text)
             digests.append((path, destination, text))
             digest_paths[str(path)] = str(destination)
 
@@ -1723,16 +1741,39 @@ def run_import(args: argparse.Namespace) -> int:
             if not args.dry_run:
                 atomic_write(destination, text)
 
-    for _, incoming in source_states:
+    for source_path, incoming in source_states:
         destination = state_path(target_root, str(incoming["harness"]), str(incoming["native_session_id"]))
-        existing = read_json(destination, {}) if destination.exists() else {}
-        if isinstance(existing, dict) and existing and session_time(existing.get("last_seen_at")) >= session_time(incoming.get("last_seen_at")):
-            report["states_kept"] += 1
-            continue
         imported = json.loads(json.dumps(incoming))
         remapped = import_digest_path(source_root, target_root, imported.get("last_digest_path"), digest_paths)
         if remapped:
             imported["last_digest_path"] = remapped
+        if source_state_keys[import_state_key(incoming)] > 1:
+            # Older stores can contain multiple records which declare the same
+            # harness/native ID but have distinct physical state filenames.
+            # Keep that filename so their history is not collapsed into one
+            # current-session state path.
+            destination = state_path(target_root, str(incoming["harness"]), source_path.stem)
+            existing = read_json(destination, {}) if destination.exists() else {}
+            if isinstance(existing, dict) and existing:
+                if import_state_fingerprint(existing) == import_state_fingerprint(imported):
+                    report["states_kept"] += 1
+                    continue
+                if import_state_fingerprint(existing) not in source_state_fingerprints:
+                    text = json.dumps(imported, indent=2, sort_keys=True) + "\n"
+                    destination = import_destination_file(destination, text)
+                    existing = read_json(destination, {}) if destination.exists() else {}
+                    if isinstance(existing, dict) and existing and import_state_fingerprint(existing) == import_state_fingerprint(imported):
+                        report["states_kept"] += 1
+                        continue
+            report["states_imported"] += 1
+            if not args.dry_run:
+                write_json(destination, imported)
+            continue
+
+        existing = read_json(destination, {}) if destination.exists() else {}
+        if isinstance(existing, dict) and existing and session_time(existing.get("last_seen_at")) >= session_time(incoming.get("last_seen_at")):
+            report["states_kept"] += 1
+            continue
         report["states_imported"] += 1
         if not args.dry_run:
             write_json(destination, imported)
