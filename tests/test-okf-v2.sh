@@ -105,8 +105,9 @@ check "legacy citations become structured sources" grep -q 'resource: https://ex
 mixed_log_source="$TMPDIR/mixed-log-source"
 mkdir -p "$mixed_log_source"
 printf '# Legacy index\n' >"$mixed_log_source/_index.md"
-printf '%s\n' '# Update Log' '## [2025-01-01] ingest | Added legacy source' '## 2025-01-02' '* Modern entry remains.' >"$mixed_log_source/log.md"
+printf '%s\n' '# Update Log' '- 2024-12-31: Dated bullet remains.' '## [2025-01-01] ingest | Added legacy source' '## 2025-01-02' '* Modern entry remains.' >"$mixed_log_source/log.md"
 python3 "$TOOL" migrate "$mixed_log_source" "$TMPDIR/mixed-log-converted"
+check "dated bullet log entries are preserved" grep -q 'Dated bullet remains' "$TMPDIR/mixed-log-converted/log.md"
 check "legacy log entries are preserved" grep -q 'Added legacy source' "$TMPDIR/mixed-log-converted/log.md"
 check "modern log entries are preserved" grep -q 'Modern entry remains' "$TMPDIR/mixed-log-converted/log.md"
 
