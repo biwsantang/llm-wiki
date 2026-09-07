@@ -67,7 +67,9 @@ bundle-to-bundle: it never changes an existing wiki unless a future explicit
 in-place workflow is selected.
 
 ```bash
-python3 -m pip install -r requirements-okf.txt
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-okf.txt
 
 # Inspect the conversion without writing anything.
 ./scripts/llm-wiki-okf.py migrate ~/wiki/topics/example /tmp/example-okf --dry-run
