@@ -247,16 +247,17 @@ printf '%s\n' '{"schema_version":1,"event":"session_event"}' > "$import_root/que
 printf 'obsolete\n' > "$import_root/shortcut-runs/old.log"
 printf 'partial\n' > "$import_root/state/codex/.interrupted.json.123.tmp"
 import_dry_run="$("$SESSION" --hub "$hub" import "$import_root" --dry-run --json 2>&1)"
-if python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["states_imported"] == 3 and data["states_kept"] == 1 and data["ignored"]["queue"]["files"] == 1 and data["ignored"]["temporary"]["files"] == 1' <<<"$import_dry_run" \
+if python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["states_imported"] == 4 and data["states_kept"] == 0 and data["ignored"]["queue"]["files"] == 1 and data["ignored"]["temporary"]["files"] == 1' <<<"$import_dry_run" \
   && [ ! -f "$hub/.sessions/state/codex/imported.json" ]; then
   log_pass "session import dry-run preserves current store"
 else
   log_fail "session import dry-run preserves current store" "$import_dry_run"
 fi
 import_result="$("$SESSION" --hub "$hub" import "$import_root" --json 2>&1)"
-if python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["states_imported"] == 3 and data["states_kept"] == 1 and data["feedback_imported"] == 1 and data["registry_imported"] == 1' <<<"$import_result" \
+if python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["states_imported"] == 4 and data["states_kept"] == 0 and data["feedback_imported"] == 1 and data["registry_imported"] == 1' <<<"$import_result" \
   && [ -f "$hub/.sessions/digests/2025/01/codex-imported.md" ] \
   && grep -q 'marker.*destination' "$hub/.sessions/state/codex/shared.json" \
+  && grep -q 'marker.*source' "$hub/.sessions/state/codex"/shared-imported-*.json \
   && grep -q 'marker.*legacy-canonical' "$hub/.sessions/state/codex/legacy-shared.json" \
   && grep -q 'marker.*legacy-revision' "$hub/.sessions/state/codex/legacy-revision.json" \
   && grep -q 'codex-imported.md' "$hub/.sessions/state/codex/imported.json" \
